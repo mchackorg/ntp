@@ -201,7 +201,8 @@ type NtpHdr struct {
 	ReferenceTime  time.Time
 	OriginTime     time.Time
 	ReceiveTime    time.Time
-	TransmitTime   ntpTime
+	TransmitTime   time.Time
+	SpoofCookie    ntpTime
 	Wire           msg
 }
 
@@ -219,6 +220,7 @@ func (nh NtpHdr) string() string {
 		"OriginTime: %v\n"+
 		"ReceiveTime: %v\n"+
 		"TransmitTime: %v\n",
+		"SpoofCookie: %v\n",
 		nh.Version,
 		nh.Mode,
 		nh.LeapIndicator,
@@ -232,27 +234,21 @@ func (nh NtpHdr) string() string {
 		nh.OriginTime,
 		nh.ReceiveTime,
 		nh.TransmitTime,
+		nh.SpoofCookie,
 	)
 }
 
-func (m *NtpMsg) antiSpoof(time time.Time) ntpTime {
-	// To ensure privacy and prevent spoofing, try to use a random 64-bit
-	// value for the TransmitTime. If crypto/rand couldn't generate a
-	// random value, fall back to using the system clock. Keep track of
-	// when the messsage was actually transmitted.
+func (m *NtpMsg) antiSpoof(time time.Time) (ntpTime, error) {
 	bits := make([]byte, 8)
 	_, err := rand.Read(bits)
-
-	var cookie ntpTime
-	if err == nil {
-		cookie = ntpTime(binary.BigEndian.Uint64(bits))
-	} else {
-		cookie = toNtpTime(time)
+	if err != nil {
+		return 0, err
 	}
 
-	m.Hdr.TransmitTime = cookie
+	cookie := ntpTime(binary.BigEndian.Uint64(bits))
+	m.Hdr.SpoofCookie = cookie
 
-	return cookie
+	return cookie, nil
 }
 
 func (nh NtpHdr) pack(buf *bytes.Buffer) error {
@@ -272,11 +268,17 @@ func (nh NtpHdr) pack(buf *bytes.Buffer) error {
 	// 	wire.ReferenceID[i] = b
 	// }
 
+	wire.ReferenceTime = toNtpTime(nh.ReferenceTime)
 	wire.OriginTime = toNtpTime(nh.OriginTime)
 	wire.ReceiveTime = toNtpTime(nh.ReceiveTime)
 
-	// Copy transmittime verbatim
-	wire.TransmitTime = nh.TransmitTime
+	// Use TransmitTime as an anti-spoofing cookie if cookie is
+	// set otherwise get current time.
+	if nh.SpoofCookie != 0 {
+		wire.TransmitTime = nh.SpoofCookie
+	} else {
+		wire.TransmitTime = toNtpTime(time.Now())
+	}
 
 	err := binary.Write(buf, binary.BigEndian, wire)
 	if err != nil {
@@ -306,9 +308,17 @@ func (nh *NtpHdr) unpack(buf *bytes.Reader) error {
 	nh.RootDispersion = wire.RootDispersion.Duration()
 	nh.ReferenceID = wire.ReferenceID
 	nh.ReferenceTime = wire.ReferenceTime.Time()
-	// TODO nh.OriginTime = wire.OriginTime
+
+	switch nh.Mode {
+	case server:
+		nh.SpoofCookie = wire.OriginTime
+		nh.TransmitTime = wire.TransmitTime.Time()
+	case client:
+		nh.SpoofCookie = wire.TransmitTime
+	}
+
 	nh.ReceiveTime = wire.ReceiveTime.Time()
-	nh.TransmitTime = wire.TransmitTime // No conversion to time.
+
 	return nil
 }
 
@@ -841,8 +851,13 @@ func getTime(host string, opt QueryOptions) (*msg, ntpTime, error) {
 	xmitmsg.Hdr.Mode = client
 	xmitmsg.Hdr.LeapIndicator = LeapNotInSync
 
+	// Keep track of when the messsage was actually transmitted.
+	// Use TransmitTime in NTP header as an anti-spoofing cookie.
 	xmitTime := time.Now()
-	spoofcookie := xmitmsg.antiSpoof(xmitTime)
+	spoofcookie, err := xmitmsg.antiSpoof(xmitTime)
+	if err != nil {
+		return nil, 0, err
+	}
 
 	var uqext UniqueIdentifier
 	if opt.NTS {
@@ -883,14 +898,14 @@ func getTime(host string, opt QueryOptions) (*msg, ntpTime, error) {
 	}
 	readbuf = readbuf[:n]
 
-	var recvNtpMsg NtpMsg
-	recvNtpMsg.unpack(readbuf)
+	var recv NtpMsg
+	recv.unpack(readbuf)
 
 	// FIXME Workaround for now since code later on works directly on wire format header.
-	recvMsg := recvNtpMsg.Hdr.Wire
+	recvMsg := recv.Hdr.Wire
 
 	if opt.NTS {
-		for _, ef := range recvNtpMsg.Extension {
+		for _, ef := range recv.Extension {
 			switch ef.Header().Type {
 			case ExtUniqueIdentifier:
 				if !bytes.Equal(ef.(UniqueIdentifier).Id, uqext.Id) {
@@ -913,17 +928,13 @@ func getTime(host string, opt QueryOptions) (*msg, ntpTime, error) {
 	recvTime := toNtpTime(xmitTime.Add(delta))
 
 	// Check for invalid fields.
-	if recvNtpMsg.Hdr.Mode != server {
-		fmt.Printf("mode: %v != server %v\n", recvNtpMsg.Hdr.Mode, server)
+	if recv.Hdr.Mode != server {
 		return nil, 0, errors.New("invalid mode in response")
 	}
-	if recvNtpMsg.Hdr.TransmitTime == 0 {
-		return nil, 0, errors.New("invalid transmit time in response")
-	}
-	if recvMsg.OriginTime != spoofcookie {
+	if recv.Hdr.SpoofCookie != spoofcookie {
 		return nil, 0, errors.New("server response mismatch")
 	}
-	if recvMsg.ReceiveTime > recvMsg.TransmitTime {
+	if recv.Hdr.TransmitTime.Before(recv.Hdr.ReceiveTime) {
 		return nil, 0, errors.New("server clock ticked backwards")
 	}
 
