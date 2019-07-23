@@ -138,7 +138,8 @@ func (n NtpMsg) String() {
 	}
 }
 
-// Pack packs a Msg: it is converted to to wire format.
+// Pack converts an NtpMsg to wire format. First the NTP header, then
+// all the Extension Fields.
 func (m NtpMsg) Pack() (buf *bytes.Buffer, err error) {
 	buf = new(bytes.Buffer)
 
@@ -158,6 +159,31 @@ func (m NtpMsg) Pack() (buf *bytes.Buffer, err error) {
 	return buf, nil
 }
 
+// unpack an NTP message and all extension fields from wire format.
+func (m *NtpMsg) unpack(buf []byte) error {
+	// TODO a reader, since read-only, and perhaps we could seek in it, to peek
+	// at exthdr type? hm
+	msgbuf := bytes.NewReader(buf)
+
+	m.Hdr.unpack(msgbuf)
+
+	for msgbuf.Len() >= 28 {
+		var eh ExtHdr
+		err := eh.unpack(msgbuf)
+		if err != nil {
+			return fmt.Errorf("unpack UniqueIdentifier EF: %s", err)
+		}
+		switch eh.Type {
+		case ExtUniqueIdentifier:
+			u := UniqueIdentifier{ExtHdr: eh}
+			err = u.unpack(msgbuf)
+			m.AddExt(u)
+		}
+	}
+
+	return nil
+}
+
 func (n *NtpMsg) AddExt(ext ExtensionField) {
 	n.Extension = append(n.Extension, ext)
 }
@@ -169,13 +195,14 @@ type NtpHdr struct {
 	Stratum        uint8
 	Poll           int8
 	Precision      int8
-	RootDelay      time.Time
-	RootDispersion time.Time
+	RootDelay      time.Duration
+	RootDispersion time.Duration
 	ReferenceID    uint32
 	ReferenceTime  time.Time
 	OriginTime     time.Time
 	ReceiveTime    time.Time
 	TransmitTime   ntpTime
+	Wire           msg
 }
 
 func (nh NtpHdr) string() string {
@@ -257,6 +284,32 @@ func (nh NtpHdr) pack(buf *bytes.Buffer) error {
 	}
 
 	return err
+}
+
+func (nh *NtpHdr) unpack(buf *bytes.Reader) error {
+	var wire msg
+
+	err := binary.Read(buf, binary.BigEndian, &wire)
+	if err != nil {
+		return err
+	}
+
+	nh.Wire = wire
+
+	nh.Version = wire.getVersion()
+	nh.Mode = wire.getMode()
+	nh.LeapIndicator = wire.getLeap()
+	nh.Stratum = wire.Stratum
+	// TODO nh.Poll = toInterval(wire.Poll)
+	nh.Precision = wire.Precision
+	nh.RootDelay = wire.RootDelay.Duration()
+	nh.RootDispersion = wire.RootDispersion.Duration()
+	nh.ReferenceID = wire.ReferenceID
+	nh.ReferenceTime = wire.ReferenceTime.Time()
+	// TODO nh.OriginTime = wire.OriginTime
+	nh.ReceiveTime = wire.ReceiveTime.Time()
+	nh.TransmitTime = wire.TransmitTime // No conversion to time.
+	return nil
 }
 
 // msg is an internal representation of an NTP packet.
@@ -783,9 +836,6 @@ func getTime(host string, opt QueryOptions) (*msg, ntpTime, error) {
 	}
 	con.SetDeadline(time.Now().Add(opt.Timeout))
 
-	// Allocate a message to hold the response.
-	recvMsg := new(msg)
-
 	var xmitmsg NtpMsg
 	xmitmsg.Hdr.Version = opt.Version
 	xmitmsg.Hdr.Mode = client
@@ -833,39 +883,21 @@ func getTime(host string, opt QueryOptions) (*msg, ntpTime, error) {
 	}
 	readbuf = readbuf[:n]
 
-	// TODO a reader, since read-only, and perhaps we could seek in it, to peek
-	// at exthdr type? hm
-	msgbuf := bytes.NewReader(readbuf)
+	var recvNtpMsg NtpMsg
+	recvNtpMsg.unpack(readbuf)
 
-	err = binary.Read(msgbuf, binary.BigEndian, recvMsg)
-	if err != nil {
-		return nil, 0, err
-	}
+	// FIXME Workaround for now since code later on works directly on wire format header.
+	recvMsg := recvNtpMsg.Hdr.Wire
 
 	if opt.NTS {
-		for msgbuf.Len() >= 28 {
-			eh := ExtHdr{}
-			err = eh.unpack(msgbuf)
-			if err != nil {
-				return nil, 0, fmt.Errorf("unpack EF header: %s", err)
-			}
-			switch eh.Type {
+		for _, ef := range recvNtpMsg.Extension {
+			switch ef.Header().Type {
 			case ExtUniqueIdentifier:
-				u := UniqueIdentifier{ExtHdr: eh}
-				err = u.unpack(msgbuf)
-				if err != nil {
-					return nil, 0, fmt.Errorf("unpack UniqueIdentifier EF: %s", err)
-				}
-				if !bytes.Equal(u.Id, uqext.Id) {
+				if !bytes.Equal(ef.(UniqueIdentifier).Id, uqext.Id) {
 					return nil, 0, fmt.Errorf("UniqueIdentifier mismatch!")
 				}
-				// case ExtAuthenticator:
-				//
-				// TODO inside authenticator we'll find more EFs, so perhaps
-				// this overall approach is not great at all...
 			}
 		}
-
 	}
 
 	// Keep track of the time the response was received.
@@ -881,10 +913,11 @@ func getTime(host string, opt QueryOptions) (*msg, ntpTime, error) {
 	recvTime := toNtpTime(xmitTime.Add(delta))
 
 	// Check for invalid fields.
-	if recvMsg.getMode() != server {
+	if recvNtpMsg.Hdr.Mode != server {
+		fmt.Printf("mode: %v != server %v\n", recvNtpMsg.Hdr.Mode, server)
 		return nil, 0, errors.New("invalid mode in response")
 	}
-	if recvMsg.TransmitTime == ntpTime(0) {
+	if recvNtpMsg.Hdr.TransmitTime == 0 {
 		return nil, 0, errors.New("invalid transmit time in response")
 	}
 	if recvMsg.OriginTime != spoofcookie {
@@ -898,7 +931,7 @@ func getTime(host string, opt QueryOptions) (*msg, ntpTime, error) {
 	// transmit time.
 	recvMsg.OriginTime = toNtpTime(xmitTime)
 
-	return recvMsg, recvTime, nil
+	return &recvMsg, recvTime, nil
 }
 
 // parseTime parses the NTP packet along with the packet receive time to
