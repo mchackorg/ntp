@@ -219,7 +219,7 @@ func (nh NtpHdr) string() string {
 		"ReferenceTime: %v\n"+
 		"OriginTime: %v\n"+
 		"ReceiveTime: %v\n"+
-		"TransmitTime: %v\n",
+		"TransmitTime: %v\n"+
 		"SpoofCookie: %v\n",
 		nh.Version,
 		nh.Mode,
@@ -633,6 +633,7 @@ type QueryOptions struct {
 	C2s          Key           // Client to server key for NTS.
 	S2c          Key           // Server to client key for NTS.
 	Cookie       []byte        // Cookie for NTS.
+	Debug        bool
 }
 
 // A Response contains time data, some of which is returned by the NTP server
@@ -884,6 +885,13 @@ func getTime(host string, opt QueryOptions) (*msg, ntpTime, error) {
 		return nil, 0, err
 	}
 
+	if opt.Debug {
+		fmt.Printf("Sending: \n")
+		xmitmsg.String()
+
+		fmt.Printf("wire: %x\n", buf)
+	}
+
 	// Transmit the query.
 	_, err = con.Write(buf.Bytes())
 	if err != nil {
@@ -900,6 +908,12 @@ func getTime(host string, opt QueryOptions) (*msg, ntpTime, error) {
 
 	var recv NtpMsg
 	recv.unpack(readbuf)
+
+	if opt.Debug {
+		fmt.Printf("Received: \n")
+		recv.String()
+		fmt.Printf("Received wire: %v\n", recv.Hdr.Wire)
+	}
 
 	// FIXME Workaround for now since code later on works directly on wire format header.
 	recvMsg := recv.Hdr.Wire
