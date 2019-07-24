@@ -441,10 +441,11 @@ func (u UniqueIdentifier) pack(buf *bytes.Buffer) error {
 		return fmt.Errorf("UniqueIdentifier.Id < 32 bytes")
 	}
 
-	padding := make([]byte, (4-value.Len())%4)
+	newlen := (value.Len() + 3) & ^3
+	padding := make([]byte, newlen-value.Len())
 
 	u.ExtHdr.Type = ExtUniqueIdentifier
-	u.ExtHdr.Length = 4 + uint16(value.Len()) + uint16(len(padding))
+	u.ExtHdr.Length = 4 + uint16(newlen)
 	err = u.ExtHdr.pack(buf)
 	if err != nil {
 		return err
@@ -507,9 +508,7 @@ func (c Cookie) pack(buf *bytes.Buffer) error {
 	}
 
 	// Round up to nearest word boundary
-
 	newlen := (origlen + 3) & ^3
-
 	padding := make([]byte, newlen-origlen)
 
 	c.ExtHdr.Type = ExtCookie
@@ -619,7 +618,7 @@ func (a Authenticator) pack(buf *bytes.Buffer) error {
 	if err != nil {
 		return err
 	}
-	cipherpadding := make([]byte, (noncebuf.Len()+3) & ^3)
+	cipherpadding := make([]byte, (cipherbuf.Len()+3) & ^3)
 	_, err = extbuf.Write(cipherpadding)
 	if err != nil {
 		return err
