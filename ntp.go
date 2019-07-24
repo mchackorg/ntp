@@ -155,12 +155,15 @@ func (m NtpMsg) Pack() (buf *bytes.Buffer, err error) {
 }
 
 // unpack an NTP message and all extension fields from wire format.
-func (m *NtpMsg) unpack(buf []byte) error {
+func (m *NtpMsg) unpack(buf []byte, key Key) error {
+	var pos int // Keep track of where in the original buf we are
+
 	// TODO a reader, since read-only, and perhaps we could seek in it, to peek
 	// at exthdr type? hm
 	msgbuf := bytes.NewReader(buf)
 
 	m.Hdr.unpack(msgbuf)
+	pos += 48
 
 	for msgbuf.Len() >= 28 {
 		var eh ExtHdr
@@ -168,6 +171,7 @@ func (m *NtpMsg) unpack(buf []byte) error {
 		if err != nil {
 			return fmt.Errorf("unpack extension field: %s", err)
 		}
+
 		switch eh.Type {
 		case ExtUniqueIdentifier:
 			u := UniqueIdentifier{ExtHdr: eh}
@@ -177,7 +181,31 @@ func (m *NtpMsg) unpack(buf []byte) error {
 			}
 
 			m.AddExt(u)
+
+		case ExtAuthenticator:
+			a := Authenticator{ExtHdr: eh}
+			err = a.unpack(msgbuf)
+			if err != nil {
+				return fmt.Errorf("unpack Authenticator: %s", err)
+			}
+
+			aessiv, err := siv.NewCMAC(key)
+			if err != nil {
+				return err
+			}
+
+			_, err = aessiv.Open(nil, a.Nonce, a.CipherText, buf[:pos])
+			if err != nil {
+				return err
+			}
+
+			m.AddExt(a)
+
+		default:
+			// TODO Unknwn extension field
 		}
+
+		pos += int(eh.Length)
 	}
 
 	return nil
@@ -523,7 +551,7 @@ func (a Authenticator) string() string {
 	return fmt.Sprintf("-- Authenticator EF\n"+
 		"  NonceLen: %v\n"+
 		"  CipherTextLen: %v\n"+
-		"  Nonce: %v\n"+
+		"  Nonce: %x\n"+
 		"  Ciphertext: %x\n"+
 		"  Key: %x\n",
 		a.NonceLen,
@@ -581,12 +609,12 @@ func (a Authenticator) pack(buf *bytes.Buffer) error {
 	if err != nil {
 		return err
 	}
-
 	noncepadding := make([]byte, (noncebuf.Len()+3) & ^3)
 	_, err = extbuf.Write(noncepadding)
 	if err != nil {
 		return err
 	}
+
 	_, err = extbuf.ReadFrom(cipherbuf)
 	if err != nil {
 		return err
@@ -615,6 +643,38 @@ func (a Authenticator) pack(buf *bytes.Buffer) error {
 	//if err != nil {
 	//	return err
 	//}
+
+	return nil
+}
+
+func (a *Authenticator) unpack(buf *bytes.Reader) error {
+	if a.ExtHdr.Type != ExtAuthenticator {
+		return fmt.Errorf("expected unpacked EF header")
+	}
+
+	// NonceLen, 2
+	if err := binary.Read(buf, binary.BigEndian, &a.NonceLen); err != nil {
+		return err
+	}
+
+	// CipherTextlen, 2
+	if err := binary.Read(buf, binary.BigEndian, &a.CipherTextLen); err != nil {
+		return err
+	}
+
+	// Nonce
+	nonce := make([]byte, a.NonceLen)
+	if err := binary.Read(buf, binary.BigEndian, &nonce); err != nil {
+		return err
+	}
+	a.Nonce = nonce
+
+	// Ciphertext
+	ciphertext := make([]byte, a.CipherTextLen)
+	if err := binary.Read(buf, binary.BigEndian, ciphertext); err != nil {
+		return err
+	}
+	a.CipherText = ciphertext
 
 	return nil
 }
@@ -906,7 +966,10 @@ func getTime(host string, opt QueryOptions) (*msg, ntpTime, error) {
 	readbuf = readbuf[:n]
 
 	var recv NtpMsg
-	recv.unpack(readbuf)
+	err = recv.unpack(readbuf, opt.S2c)
+	if err != nil {
+		return nil, 0, err
+	}
 
 	if opt.Debug {
 		fmt.Printf("Received: \n")
@@ -924,6 +987,9 @@ func getTime(host string, opt QueryOptions) (*msg, ntpTime, error) {
 				if !bytes.Equal(ef.(UniqueIdentifier).Id, uqext.Id) {
 					return nil, 0, fmt.Errorf("UniqueIdentifier mismatch!")
 				}
+
+			case ExtAuthenticator:
+				// TODO handle now decrypted Extension Fields
 			}
 		}
 	}
