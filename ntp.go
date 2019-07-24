@@ -121,11 +121,6 @@ func (t ntpTimeShort) Duration() time.Duration {
 	return time.Duration(sec + frac)
 }
 
-type ntpmsg struct {
-	Hdr       NtpHdr
-	Extension []ExtensionField
-}
-
 type NtpMsg struct {
 	Hdr       NtpHdr
 	Extension []ExtensionField
@@ -171,12 +166,16 @@ func (m *NtpMsg) unpack(buf []byte) error {
 		var eh ExtHdr
 		err := eh.unpack(msgbuf)
 		if err != nil {
-			return fmt.Errorf("unpack UniqueIdentifier EF: %s", err)
+			return fmt.Errorf("unpack extension field: %s", err)
 		}
 		switch eh.Type {
 		case ExtUniqueIdentifier:
 			u := UniqueIdentifier{ExtHdr: eh}
 			err = u.unpack(msgbuf)
+			if err != nil {
+				return fmt.Errorf("unpack UniqueIdentifier: %s", err)
+			}
+
 			m.AddExt(u)
 		}
 	}
