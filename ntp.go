@@ -160,8 +160,6 @@ func (nm NtpMsg) Pack() (buf *bytes.Buffer, err error) {
 func (nm *NtpMsg) unpack(buf []byte, key Key) error {
 	var pos int // Keep track of where in the original buf we are
 
-	// TODO a reader, since read-only, and perhaps we could seek in it, to peek
-	// at exthdr type? hm
 	msgbuf := bytes.NewReader(buf)
 
 	err := nm.Hdr.unpack(msgbuf)
