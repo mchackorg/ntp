@@ -17,6 +17,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
+	"strings"
 	"time"
 
 	"github.com/secure-io/siv-go"
@@ -234,35 +236,16 @@ type NtpHdr struct {
 }
 
 func (nh NtpHdr) string() string {
-	return fmt.Sprintf("Version %v\n"+
-		"Mode: %v\n"+
-		"Leap: %v\n"+
-		"Stratum: %v\n"+
-		"Poll: %v\n"+
-		"Precision: %v\n"+
-		"RootDelay: %v\n"+
-		"RootDispersion: %v\n"+
-		"ReferenceID: %v\n"+
-		"ReferenceTime: %v\n"+
-		"OriginTime: %v\n"+
-		"ReceiveTime: %v\n"+
-		"TransmitTime: %v\n"+
-		"SpoofCookie: %v\n",
-		nh.Version,
-		nh.Mode,
-		nh.LeapIndicator,
-		nh.Stratum,
-		nh.Poll,
-		nh.Precision,
-		nh.RootDelay,
-		nh.RootDispersion,
-		nh.ReferenceID,
-		nh.ReferenceTime,
-		nh.OriginTime,
-		nh.ReceiveTime,
-		nh.TransmitTime,
-		nh.SpoofCookie,
-	)
+	s := strings.Builder{}
+	e := reflect.ValueOf(&nh).Elem()
+	for i := 0; i < e.NumField(); i++ {
+		varName := e.Type().Field(i).Name
+		varValue := e.Field(i).Interface()
+		if varName != "Wire" {
+			s.WriteString(fmt.Sprintf("%v: %v\n", varName, varValue))
+		}
+	}
+	return s.String()
 }
 
 func (nm *NtpMsg) antiSpoof(time time.Time) (ntpTime, error) {
