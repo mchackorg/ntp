@@ -126,24 +126,24 @@ type NtpMsg struct {
 	Extension []ExtensionField
 }
 
-func (n NtpMsg) String() {
-	fmt.Printf(n.Hdr.string())
-	for _, ef := range n.Extension {
-		fmt.Printf(ef.string())
+func (nm NtpMsg) String() {
+	fmt.Println(nm.Hdr.string())
+	for _, ef := range nm.Extension {
+		fmt.Println(ef.string())
 	}
 }
 
 // Pack converts an NtpMsg to wire format. First the NTP header, then
 // all the Extension Fields.
-func (m NtpMsg) Pack() (buf *bytes.Buffer, err error) {
+func (nm NtpMsg) Pack() (buf *bytes.Buffer, err error) {
 	buf = new(bytes.Buffer)
 
-	err = m.Hdr.pack(buf)
+	err = nm.Hdr.pack(buf)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, ef := range m.Extension {
+	for _, ef := range nm.Extension {
 		err = ef.pack(buf)
 		if err != nil {
 			return nil, err
@@ -155,14 +155,14 @@ func (m NtpMsg) Pack() (buf *bytes.Buffer, err error) {
 }
 
 // unpack an NTP message and all extension fields from wire format.
-func (m *NtpMsg) unpack(buf []byte, key Key) error {
+func (nm *NtpMsg) unpack(buf []byte, key Key) error {
 	var pos int // Keep track of where in the original buf we are
 
 	// TODO a reader, since read-only, and perhaps we could seek in it, to peek
 	// at exthdr type? hm
 	msgbuf := bytes.NewReader(buf)
 
-	m.Hdr.unpack(msgbuf)
+	nm.Hdr.unpack(msgbuf)
 	pos += 48
 
 	for msgbuf.Len() >= 28 {
@@ -180,7 +180,7 @@ func (m *NtpMsg) unpack(buf []byte, key Key) error {
 				return fmt.Errorf("unpack UniqueIdentifier: %s", err)
 			}
 
-			m.AddExt(u)
+			nm.AddExt(u)
 
 		case ExtAuthenticator:
 			a := Authenticator{ExtHdr: eh}
@@ -199,7 +199,7 @@ func (m *NtpMsg) unpack(buf []byte, key Key) error {
 				return err
 			}
 
-			m.AddExt(a)
+			nm.AddExt(a)
 
 		default:
 			// TODO Unknwn extension field
@@ -211,8 +211,8 @@ func (m *NtpMsg) unpack(buf []byte, key Key) error {
 	return nil
 }
 
-func (n *NtpMsg) AddExt(ext ExtensionField) {
-	n.Extension = append(n.Extension, ext)
+func (nm *NtpMsg) AddExt(ext ExtensionField) {
+	nm.Extension = append(nm.Extension, ext)
 }
 
 type NtpHdr struct {
@@ -265,7 +265,7 @@ func (nh NtpHdr) string() string {
 	)
 }
 
-func (m *NtpMsg) antiSpoof(time time.Time) (ntpTime, error) {
+func (nm *NtpMsg) antiSpoof(time time.Time) (ntpTime, error) {
 	bits := make([]byte, 8)
 	_, err := rand.Read(bits)
 	if err != nil {
@@ -273,7 +273,7 @@ func (m *NtpMsg) antiSpoof(time time.Time) (ntpTime, error) {
 	}
 
 	cookie := ntpTime(binary.BigEndian.Uint64(bits))
-	m.Hdr.SpoofCookie = cookie
+	nm.Hdr.SpoofCookie = cookie
 
 	return cookie, nil
 }
