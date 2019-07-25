@@ -164,7 +164,10 @@ func (nm *NtpMsg) unpack(buf []byte, key Key) error {
 	// at exthdr type? hm
 	msgbuf := bytes.NewReader(buf)
 
-	nm.Hdr.unpack(msgbuf)
+	err := nm.Hdr.unpack(msgbuf)
+	if err != nil {
+		return fmt.Errorf("unpack header: %s", err)
+	}
 	pos += 48
 
 	for msgbuf.Len() >= 28 {
