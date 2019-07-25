@@ -409,22 +409,22 @@ type ExtensionField interface {
 
 type UniqueIdentifier struct {
 	ExtHdr
-	Id []byte
+	ID []byte
 }
 
 func (u UniqueIdentifier) string() string {
 	return fmt.Sprintf("-- UniqueIdentifier EF\n"+
-		"  Id: %x\n", u.Id)
+		"  ID: %x\n", u.ID)
 }
 
 func (u UniqueIdentifier) pack(buf *bytes.Buffer) error {
 	value := new(bytes.Buffer)
-	err := binary.Write(value, binary.BigEndian, u.Id)
+	err := binary.Write(value, binary.BigEndian, u.ID)
 	if err != nil {
 		return err
 	}
 	if value.Len() < 32 {
-		return fmt.Errorf("UniqueIdentifier.Id < 32 bytes")
+		return fmt.Errorf("UniqueIdentifier.ID < 32 bytes")
 	}
 
 	newlen := (value.Len() + 3) & ^3
@@ -459,7 +459,7 @@ func (u *UniqueIdentifier) unpack(buf *bytes.Reader) error {
 	if err := binary.Read(buf, binary.BigEndian, id); err != nil {
 		return err
 	}
-	u.Id = id
+	u.ID = id
 	return nil
 }
 
@@ -471,7 +471,7 @@ func (u *UniqueIdentifier) Generate() ([]byte, error) {
 		return nil, err
 	}
 
-	u.Id = id
+	u.ID = id
 
 	return id, nil
 }
@@ -969,7 +969,7 @@ func getTime(host string, opt QueryOptions) (*msg, ntpTime, error) {
 		for _, ef := range recv.Extension {
 			switch ef.Header().Type {
 			case ExtUniqueIdentifier:
-				if !bytes.Equal(ef.(UniqueIdentifier).Id, uqext.Id) {
+				if !bytes.Equal(ef.(UniqueIdentifier).ID, uqext.ID) {
 					return nil, 0, fmt.Errorf("UniqueIdentifier mismatch!")
 				}
 
