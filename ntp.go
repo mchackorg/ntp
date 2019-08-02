@@ -17,6 +17,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"reflect"
+	"strings"
 	"time"
 
 	"github.com/secure-io/siv-go"
@@ -126,24 +128,24 @@ type NtpMsg struct {
 	Extension []ExtensionField
 }
 
-func (n NtpMsg) String() {
-	fmt.Printf(n.Hdr.string())
-	for _, ef := range n.Extension {
-		fmt.Printf(ef.string())
+func (nm NtpMsg) String() {
+	fmt.Println(nm.Hdr.string())
+	for _, ef := range nm.Extension {
+		fmt.Println(ef.string())
 	}
 }
 
 // Pack converts an NtpMsg to wire format. First the NTP header, then
 // all the Extension Fields.
-func (m NtpMsg) Pack() (buf *bytes.Buffer, err error) {
+func (nm NtpMsg) Pack() (buf *bytes.Buffer, err error) {
 	buf = new(bytes.Buffer)
 
-	err = m.Hdr.pack(buf)
+	err = nm.Hdr.pack(buf)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, ef := range m.Extension {
+	for _, ef := range nm.Extension {
 		err = ef.pack(buf)
 		if err != nil {
 			return nil, err
@@ -155,14 +157,15 @@ func (m NtpMsg) Pack() (buf *bytes.Buffer, err error) {
 }
 
 // unpack an NTP message and all extension fields from wire format.
-func (m *NtpMsg) unpack(buf []byte, key Key) error {
+func (nm *NtpMsg) unpack(buf []byte, key Key) error {
 	var pos int // Keep track of where in the original buf we are
 
-	// TODO a reader, since read-only, and perhaps we could seek in it, to peek
-	// at exthdr type? hm
 	msgbuf := bytes.NewReader(buf)
 
-	m.Hdr.unpack(msgbuf)
+	err := nm.Hdr.unpack(msgbuf)
+	if err != nil {
+		return fmt.Errorf("unpack header: %s", err)
+	}
 	pos += 48
 
 	for msgbuf.Len() >= 28 {
@@ -180,7 +183,7 @@ func (m *NtpMsg) unpack(buf []byte, key Key) error {
 				return fmt.Errorf("unpack UniqueIdentifier: %s", err)
 			}
 
-			m.AddExt(u)
+			nm.AddExt(u)
 
 		case ExtAuthenticator:
 			a := Authenticator{ExtHdr: eh}
@@ -199,7 +202,7 @@ func (m *NtpMsg) unpack(buf []byte, key Key) error {
 				return err
 			}
 
-			m.AddExt(a)
+			nm.AddExt(a)
 
 		default:
 			// TODO Unknwn extension field
@@ -211,8 +214,8 @@ func (m *NtpMsg) unpack(buf []byte, key Key) error {
 	return nil
 }
 
-func (n *NtpMsg) AddExt(ext ExtensionField) {
-	n.Extension = append(n.Extension, ext)
+func (nm *NtpMsg) AddExt(ext ExtensionField) {
+	nm.Extension = append(nm.Extension, ext)
 }
 
 type NtpHdr struct {
@@ -234,38 +237,19 @@ type NtpHdr struct {
 }
 
 func (nh NtpHdr) string() string {
-	return fmt.Sprintf("Version %v\n"+
-		"Mode: %v\n"+
-		"Leap: %v\n"+
-		"Stratum: %v\n"+
-		"Poll: %v\n"+
-		"Precision: %v\n"+
-		"RootDelay: %v\n"+
-		"RootDispersion: %v\n"+
-		"ReferenceID: %v\n"+
-		"ReferenceTime: %v\n"+
-		"OriginTime: %v\n"+
-		"ReceiveTime: %v\n"+
-		"TransmitTime: %v\n"+
-		"SpoofCookie: %v\n",
-		nh.Version,
-		nh.Mode,
-		nh.LeapIndicator,
-		nh.Stratum,
-		nh.Poll,
-		nh.Precision,
-		nh.RootDelay,
-		nh.RootDispersion,
-		nh.ReferenceID,
-		nh.ReferenceTime,
-		nh.OriginTime,
-		nh.ReceiveTime,
-		nh.TransmitTime,
-		nh.SpoofCookie,
-	)
+	s := strings.Builder{}
+	e := reflect.ValueOf(&nh).Elem()
+	for i := 0; i < e.NumField(); i++ {
+		varName := e.Type().Field(i).Name
+		varValue := e.Field(i).Interface()
+		if varName != "Wire" {
+			s.WriteString(fmt.Sprintf("%v: %v\n", varName, varValue))
+		}
+	}
+	return s.String()
 }
 
-func (m *NtpMsg) antiSpoof(time time.Time) (ntpTime, error) {
+func (nm *NtpMsg) antiSpoof(time time.Time) (ntpTime, error) {
 	bits := make([]byte, 8)
 	_, err := rand.Read(bits)
 	if err != nil {
@@ -273,7 +257,7 @@ func (m *NtpMsg) antiSpoof(time time.Time) (ntpTime, error) {
 	}
 
 	cookie := ntpTime(binary.BigEndian.Uint64(bits))
-	m.Hdr.SpoofCookie = cookie
+	nm.Hdr.SpoofCookie = cookie
 
 	return cookie, nil
 }
@@ -423,22 +407,22 @@ type ExtensionField interface {
 
 type UniqueIdentifier struct {
 	ExtHdr
-	Id []byte
+	ID []byte
 }
 
 func (u UniqueIdentifier) string() string {
 	return fmt.Sprintf("-- UniqueIdentifier EF\n"+
-		"  Id: %x\n", u.Id)
+		"  ID: %x\n", u.ID)
 }
 
 func (u UniqueIdentifier) pack(buf *bytes.Buffer) error {
 	value := new(bytes.Buffer)
-	err := binary.Write(value, binary.BigEndian, u.Id)
+	err := binary.Write(value, binary.BigEndian, u.ID)
 	if err != nil {
 		return err
 	}
 	if value.Len() < 32 {
-		return fmt.Errorf("UniqueIdentifier.Id < 32 bytes")
+		return fmt.Errorf("UniqueIdentifier.ID < 32 bytes")
 	}
 
 	newlen := (value.Len() + 3) & ^3
@@ -473,7 +457,7 @@ func (u *UniqueIdentifier) unpack(buf *bytes.Reader) error {
 	if err := binary.Read(buf, binary.BigEndian, id); err != nil {
 		return err
 	}
-	u.Id = id
+	u.ID = id
 	return nil
 }
 
@@ -485,7 +469,7 @@ func (u *UniqueIdentifier) Generate() ([]byte, error) {
 		return nil, err
 	}
 
-	u.Id = id
+	u.ID = id
 
 	return id, nil
 }
@@ -983,7 +967,7 @@ func getTime(host string, opt QueryOptions) (*msg, ntpTime, error) {
 		for _, ef := range recv.Extension {
 			switch ef.Header().Type {
 			case ExtUniqueIdentifier:
-				if !bytes.Equal(ef.(UniqueIdentifier).Id, uqext.Id) {
+				if !bytes.Equal(ef.(UniqueIdentifier).ID, uqext.ID) {
 					return nil, 0, fmt.Errorf("UniqueIdentifier mismatch!")
 				}
 
