@@ -16,6 +16,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"reflect"
 	"strings"
@@ -205,7 +206,11 @@ func (nm *NtpMsg) unpack(buf []byte, key Key) error {
 			nm.AddExt(a)
 
 		default:
-			// TODO Unknwn extension field
+			// Unknown extension field. Skip it.
+			_, err := msgbuf.Seek(int64(eh.Length), io.SeekCurrent)
+			if err != nil {
+				return err
+			}
 		}
 
 		pos += int(eh.Length)
